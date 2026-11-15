@@ -22,4 +22,4 @@ services:
       - key: GUARDIAN_CASH_ONLY_ENFORCED
         value: "true"
       - key: GROQ_MODEL_ID
-        value: "qwen-2.5-32b"
+        value: "qwen/qwen3.8-27b"

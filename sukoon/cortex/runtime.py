@@ -38,7 +38,7 @@ class CortexRuntime:
         self.groq_api_key = os.getenv("GROQ_API_KEY", "")
         if self.groq_api_key:
             self.endpoint_url = "https://api.groq.com/openai/v1"
-            self.model_id = os.getenv("GROQ_MODEL_ID", "qwen-2.5-32b")
+            self.model_id = os.getenv("GROQ_MODEL_ID", "qwen/qwen3.8-27b")
         else:
             self.endpoint_url = os.getenv("LLAMA_CPP_ENDPOINT", endpoint_url)
             self.model_id = os.getenv("LLAMA_CPP_MODEL_ID", model_id)

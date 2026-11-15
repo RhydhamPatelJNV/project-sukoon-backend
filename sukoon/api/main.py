@@ -111,7 +111,7 @@ def get_system_resources() -> Dict[str, Any]:
     active_model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     if groq_key:
         llama_status = "ONLINE_READY"
-        active_model = os.getenv("GROQ_MODEL_ID", "qwen-2.5-32b (Groq Cloud)")
+        active_model = os.getenv("GROQ_MODEL_ID", "qwen/qwen3.8-27b (Groq Cloud)")
     else:
         llama_endpoint = os.getenv("LLAMA_CPP_ENDPOINT", "http://127.0.0.1:8088/v1")
         health_url = llama_endpoint.replace("/v1", "").rstrip("/") + "/health"
@@ -149,7 +149,7 @@ def cortex_chat(req: CortexChatRequest) -> Dict[str, Any]:
     groq_api_key = os.getenv("GROQ_API_KEY", "")
     if groq_api_key:
         url = "https://api.groq.com/openai/v1/chat/completions"
-        model_name = os.getenv("GROQ_MODEL_ID", "qwen-2.5-32b")
+        model_name = os.getenv("GROQ_MODEL_ID", "qwen/qwen3.8-27b")
         headers = {"Authorization": f"Bearer {groq_api_key}"}
     else:
         llama_endpoint = os.getenv("LLAMA_CPP_ENDPOINT", "http://127.0.0.1:8088/v1")
