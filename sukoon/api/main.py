@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from sukoon.core.events import EventEnvelope, EventType
 from sukoon.core.ledger import EventLedger
+from sukoon.core.clock import USMarketCalendar
 from sukoon.data.symbols import SymbolMaster
 from sukoon.guardian.engine import SukoonGuardianEngine
 from sukoon.guardian.models import GuardianPolicy
@@ -230,6 +231,10 @@ def get_agent_card(agent_id: str) -> Dict[str, Any]:
 # ==========================================
 # 3. Market & Data Quality Endpoints
 # ==========================================
+
+@app.get("/api/v1/market/hours")
+def get_market_hours() -> Dict[str, Any]:
+    return USMarketCalendar.current_status()
 
 @app.get("/api/v1/market/symbols")
 def get_symbols() -> List[Dict[str, Any]]:
