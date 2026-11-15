@@ -10,6 +10,12 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import httpx
 import psutil
 from fastapi import FastAPI, HTTPException, Query, status
@@ -323,6 +329,7 @@ def get_portfolio(environment: str) -> Dict[str, Any]:
             "equity": 0.0,
             "positions": {}
         }
+    paper_portfolio.sync_with_alpaca()
     return {
         "environment": "PAPER",
         "cash": round(paper_portfolio.cash, 2),

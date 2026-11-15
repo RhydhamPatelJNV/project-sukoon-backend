@@ -1,13 +1,7 @@
 {
-  "cash": 94882.54,
-  "positions": {
-    "SPY": 4,
-    "AAPL": 12
-  },
-  "cost_basis": {
-    "SPY": 592.2384,
-    "AAPL": 229.0358
-  },
+  "cash": 100000.0,
+  "positions": {},
+  "cost_basis": {},
   "idempotency_keys": {
     "auto-ord-fea6af796c49-1794740277": "ord-fea6af796c49",
     "auto-ord-b6f5ee4dd145-1794740278": "ord-b6f5ee4dd145"
@@ -42,5 +36,5 @@
       "filled_at_utc": "2026-11-15T10:57:58.006486+00:00"
     }
   ],
-  "last_updated_utc": "2026-11-15T10:57:58.006486+00:00"
+  "last_updated_utc": "2026-11-15T11:23:58.540226+00:00"
 }
