@@ -20,6 +20,7 @@ from sukoon.core.clock import USMarketCalendar
 from sukoon.core.events import EventEnvelope, EventType
 from sukoon.core.ledger import EventLedger
 from sukoon.cortex.catalog import get_specialist, list_all_specialists
+from sukoon.cortex.specialist_monitor import SpecialistMonitor
 from sukoon.data.symbols import SymbolMaster
 from sukoon.guardian.engine import SukoonGuardianEngine
 from sukoon.guardian.models import GuardianPolicy
@@ -58,6 +59,7 @@ symbol_master = SymbolMaster()
 guardian = SukoonGuardianEngine(symbol_master=symbol_master)
 paper_portfolio = PaperPortfolio(initial_cash=100000.0, persistence_path=PORTFOLIO_PATH)
 strategy_evolution_mgr = StrategyEvolutionManager(persistence_path=STRATEGY_PATH)
+specialist_monitor = SpecialistMonitor()
 
 # Instantiate Autonomous Trader Agent with Strategy Evolution Manager
 autonomous_trader = AutonomousTrader(
@@ -232,36 +234,16 @@ def cortex_chat(req: CortexChatRequest) -> Dict[str, Any]:
 
 @app.get("/api/v1/agents")
 def list_agents(group_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    specialists = list_all_specialists()
-    if group_id:
-        specialists = [s for s in specialists if s.group_id == group_id.upper()]
-    return [
-        {
-            "role_id": s.role_id,
-            "group_id": s.group_id,
-            "primary_task": s.primary_task,
-            "role_type": s.role_type,
-            "hard_boundary": s.hard_boundary,
-            "is_quarantined": False
-        }
-        for s in specialists
-    ]
+    """Returns all 100 specialist roles enriched with real-time cognitive states and streaming chain-of-thought."""
+    specialist_monitor.update_thoughts_cycle()
+    return specialist_monitor.get_all_specialists(group_id)
 
 @app.get("/api/v1/agents/{agent_id}")
 def get_agent_card(agent_id: str) -> Dict[str, Any]:
-    specialist = get_specialist(agent_id)
-    if not specialist:
+    agent = specialist_monitor.get_specialist_detail(agent_id)
+    if not agent:
         raise HTTPException(status_code=404, detail=f"Specialist {agent_id} not found.")
-    return {
-        "role_id": specialist.role_id,
-        "group_id": specialist.group_id,
-        "primary_task": specialist.primary_task,
-        "role_type": specialist.role_type,
-        "inputs": specialist.inputs,
-        "required_output": specialist.required_output,
-        "hard_boundary": specialist.hard_boundary,
-        "prompt": specialist.prompt
-    }
+    return agent
 
 # ==========================================
 # 3. Market & Data Quality Endpoints
@@ -504,6 +486,12 @@ async def trigger_manual_scan() -> Dict[str, Any]:
     """Triggers an immediate autonomous scan & execution cycle."""
     await autonomous_trader.run_scan_cycle()
     return autonomous_trader.get_status()
+
+@app.post("/api/v1/autonomous/weekend-replay/toggle")
+def toggle_weekend_replay_demo() -> Dict[str, Any]:
+    """Toggles weekend simulation replay mode (for demo/testing only)."""
+    mode = autonomous_trader.toggle_weekend_replay()
+    return {"status": "SUCCESS", "weekend_replay_mode": mode}
 
 # ==========================================
 # 7. Event Ledger & Audit Endpoints

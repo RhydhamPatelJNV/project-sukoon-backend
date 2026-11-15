@@ -1,0 +1,46 @@
+{
+  "cash": 94882.54,
+  "positions": {
+    "SPY": 4,
+    "AAPL": 12
+  },
+  "cost_basis": {
+    "SPY": 592.2384,
+    "AAPL": 229.0358
+  },
+  "idempotency_keys": {
+    "auto-ord-fea6af796c49-1794740277": "ord-fea6af796c49",
+    "auto-ord-b6f5ee4dd145-1794740278": "ord-b6f5ee4dd145"
+  },
+  "history": [
+    {
+      "order_id": "ord-fea6af796c49",
+      "strategy_id": "AUTO_EMA_TREND_MOMENTUM",
+      "symbol": "SPY",
+      "action": "BUY",
+      "quantity": 4,
+      "limit_price": 592.71,
+      "filled_quantity": 4,
+      "filled_avg_price": 592.2384,
+      "status": "FILLED",
+      "total_notional": 2368.95,
+      "created_at_utc": "2026-11-15T10:57:57.990292+00:00",
+      "filled_at_utc": "2026-11-15T10:57:57.990292+00:00"
+    },
+    {
+      "order_id": "ord-b6f5ee4dd145",
+      "strategy_id": "AUTO_EMA_TREND_MOMENTUM",
+      "symbol": "AAPL",
+      "action": "BUY",
+      "quantity": 12,
+      "limit_price": 229.22,
+      "filled_quantity": 12,
+      "filled_avg_price": 229.0358,
+      "status": "FILLED",
+      "total_notional": 2748.43,
+      "created_at_utc": "2026-11-15T10:57:58.006486+00:00",
+      "filled_at_utc": "2026-11-15T10:57:58.006486+00:00"
+    }
+  ],
+  "last_updated_utc": "2026-11-15T10:57:58.006486+00:00"
+}

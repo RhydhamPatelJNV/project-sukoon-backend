@@ -272,65 +272,58 @@ class StrategyEvolutionManager:
         return new_strat
 
     def evaluate_strategy_confidence(self, strat: DynamicStrategy) -> None:
-        """Continuously re-calculates statistical confidence and transitions lifecycle states."""
+        """Continuously re-calculates statistical confidence with 7-day incubation warmup protection."""
         if strat.is_user_overridden:
             # Respect manual operator override
             return
 
-        score = 50.0  # Base neutral confidence
+        min_required_trades = 20
+        is_warmup = strat.total_trades < min_required_trades
 
-        # 1. Trade sample & Win rate contribution (up to +30 pts)
-        if strat.total_trades > 0:
-            if strat.win_rate >= 65.0:
-                score += 25.0
-            elif strat.win_rate >= 55.0:
-                score += 15.0
-            elif strat.win_rate >= 45.0:
-                score += 5.0
-            elif strat.win_rate < 38.0 and strat.total_trades >= 4:
-                score -= 20.0
+        # Bayesian Laplace prior smoothing (prior: 5.5 wins out of 10 pseudo-trials = 55% prior)
+        prior_wins = 5.5
+        prior_losses = 4.5
+        effective_wins = strat.winning_trades + prior_wins
+        effective_total = strat.total_trades + prior_wins + prior_losses
+        smoothed_win_rate = (effective_wins / effective_total) * 100.0
 
-        # 2. Sharpe ratio contribution (up to +20 pts)
-        if strat.sharpe_ratio >= 1.8:
-            score += 20.0
-        elif strat.sharpe_ratio >= 1.2:
-            score += 10.0
-        elif strat.sharpe_ratio < 0.6 and strat.total_trades >= 4:
-            score -= 15.0
+        # Confidence calculation
+        base_confidence = 62.0
+        win_rate_delta = (smoothed_win_rate - 55.0) * 1.2
+        sharpe_delta = (strat.sharpe_ratio - 1.2) * 8.0 if strat.total_trades >= 5 else 0.0
+        dd_penalty = max(0.0, (strat.max_drawdown_pct - 2.0) * 6.0)
 
-        # 3. Drawdown & Consecutive Losses penalty (up to -35 pts)
-        if strat.consecutive_losses >= 3:
-            score -= (strat.consecutive_losses * 10.0)
-
-        if strat.max_drawdown_pct > 3.5:
-            score -= 25.0
-        elif strat.max_drawdown_pct > 2.0:
-            score -= 10.0
-        elif strat.max_drawdown_pct < 1.2 and strat.total_trades >= 3:
-            score += 10.0
-
-        # Clamp score 5.0 - 95.0%
-        final_score = round(max(5.0, min(95.0, score)), 1)
+        score = base_confidence + win_rate_delta + sharpe_delta - dd_penalty
+        final_score = round(max(15.0, min(95.0, score)), 1)
         strat.confidence_score = final_score
 
-        # State transition based on confidence score
-        if final_score >= self.confidence_threshold_high:
-            strat.lifecycle = StrategyLifecycle.CONFIDENT_ACTIVE
+        if is_warmup:
+            # CANNOT DROP DURING WARMUP! Protects against premature rejection on short-term noise.
+            strat.lifecycle = StrategyLifecycle.CONFIDENT_ACTIVE if final_score >= self.confidence_threshold_high else StrategyLifecycle.INCUBATING
             strat.confidence_rationale = (
-                f"UPHELD: Confidence {final_score}% exceeds {self.confidence_threshold_high}% threshold. "
-                f"Win rate {strat.win_rate}%, Sharpe {strat.sharpe_ratio:.2f}. Approved to uphold real money risk."
-            )
-        elif final_score < self.confidence_threshold_drop:
-            strat.lifecycle = StrategyLifecycle.DROPPED
-            strat.confidence_rationale = (
-                f"DROPPED: Confidence {final_score}% fell below {self.confidence_threshold_drop}%. "
-                f"Alpha decay or excessive drawdown detected ({strat.consecutive_losses} consecutive losses). Strategy retired."
+                f"INCUBATION WARMUP: Sample size ({strat.total_trades}/{min_required_trades} trades). "
+                f"Protected by 7-day minimum statistical observation window. Smoothed Win Rate: {smoothed_win_rate:.1f}%. "
+                f"Confidence: {final_score}%."
             )
         else:
-            strat.lifecycle = StrategyLifecycle.PROBATION if final_score < 60.0 else StrategyLifecycle.INCUBATING
-            strat.confidence_rationale = (
-                f"EVALUATING: Confidence {final_score}% in active monitoring band. Position sizing calibrated."
-            )
+            # Full statistical evaluation after minimum trades achieved
+            if final_score >= self.confidence_threshold_high:
+                strat.lifecycle = StrategyLifecycle.CONFIDENT_ACTIVE
+                strat.confidence_rationale = (
+                    f"UPHELD FOR REAL MONEY: Confidence {final_score}% statistically verified over {strat.total_trades} trades. "
+                    f"Win rate {strat.win_rate}%, Sharpe {strat.sharpe_ratio:.2f}. Approved for production sizing."
+                )
+            elif final_score < self.confidence_threshold_drop:
+                strat.lifecycle = StrategyLifecycle.DROPPED
+                strat.confidence_rationale = (
+                    f"DROPPED AFTER 7-DAY EVALUATION: Statistically significant alpha decay detected over {strat.total_trades} trades. "
+                    f"Confidence {final_score}% fell below {self.confidence_threshold_drop}%. Strategy retired."
+                )
+            else:
+                strat.lifecycle = StrategyLifecycle.PROBATION if final_score < 60.0 else StrategyLifecycle.INCUBATING
+                strat.confidence_rationale = (
+                    f"MONITORING: Confidence {final_score}% in active evaluation band. Position sizing calibrated."
+                )
 
         strat.last_evaluated_utc = datetime.now(timezone.utc).isoformat()
         self.save_to_disk()

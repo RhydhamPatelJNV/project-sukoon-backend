@@ -42,6 +42,7 @@ class AutonomousTrader:
         self.scan_interval_seconds = scan_interval_seconds
         
         self.is_running = True
+        self.weekend_replay_mode = False  # Strict real-world US market calendar enforcement by default
         self.total_scans = 0
         self.last_scan_utc: Optional[str] = None
         self.last_signal: Optional[Dict[str, Any]] = None
@@ -168,9 +169,36 @@ class AutonomousTrader:
         self.last_scan_utc = now_str
         quotes = self._update_synthetic_quotes()
 
-        # Check market status for logging
+        # Check market calendar status
         mkt_status = USMarketCalendar.current_status()
-        
+        is_rth = mkt_status.get("is_regular_market_open", False)
+        market_phase = mkt_status.get("market_phase", "WEEKEND_CLOSED")
+        ist_time = mkt_status.get("indian_standard_time", "")
+        us_time = mkt_status.get("us_eastern_time", "")
+
+        # STRICT US MARKET CALENDAR GATE:
+        # On weekends (Saturday/Sunday) and outside RTH, US Equities are CLOSED!
+        # Do NOT execute market trades on a closed market unless operator explicitly enabled weekend replay demo.
+        if not is_rth and not self.weekend_replay_mode:
+            self.last_signal = {
+                "symbol": "MARKET_CLOSED",
+                "action": "WEEKEND_STANDBY",
+                "strategy_id": "WEEKEND_RESEARCH_MODE",
+                "strategy_name": "Weekend Statistical Research & Replay Incubator",
+                "price": 0.0,
+                "quantity": 0,
+                "reason": f"US Markets Closed ({market_phase}). NYSE/NASDAQ reopens Monday 09:30 ET ({mkt_status.get('regular_hours_ist')}). Zero live orders executed on weekends.",
+                "rsi": 50.0,
+                "confidence_score": 100.0,
+                "timestamp_utc": now_str
+            }
+            self.log(
+                "INFO",
+                f"WEEKEND MARKET STANDBY: US Markets closed ({market_phase}). Zero live orders permitted. Running weekend incubation research. Next session: Monday 09:30 ET.",
+                {"market_phase": market_phase, "us_time": us_time, "ist_time": ist_time}
+            )
+            return
+
         # 1. Retrieve runnable strategies
         active_strats = self.evolution_mgr.get_runnable_strategies()
 
@@ -406,9 +434,15 @@ class AutonomousTrader:
             self._task = None
         self.log("INFO", "Autonomous Trader loop paused.")
 
+    def toggle_weekend_replay(self) -> bool:
+        """Toggles weekend simulation replay mode (for demo/testing only)."""
+        self.weekend_replay_mode = not self.weekend_replay_mode
+        return self.weekend_replay_mode
+
     def get_status(self) -> Dict[str, Any]:
         """Telemetry status payload for frontend dashboard."""
         runnable = self.evolution_mgr.get_runnable_strategies()
+        mkt_status = USMarketCalendar.current_status()
         return {
             "is_running": self.is_running,
             "total_scans": self.total_scans,
@@ -416,6 +450,8 @@ class AutonomousTrader:
             "last_scan_utc": self.last_scan_utc,
             "last_signal": self.last_signal,
             "last_trade": self.last_trade,
+            "weekend_replay_mode": self.weekend_replay_mode,
+            "market_calendar": mkt_status,
             "simultaneous_enabled": self.evolution_mgr.simultaneous_enabled,
             "active_strategies_count": len(runnable),
             "total_strategies_discovered": len(self.evolution_mgr.strategies),
