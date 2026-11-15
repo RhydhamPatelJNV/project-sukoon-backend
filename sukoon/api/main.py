@@ -4,6 +4,7 @@ Implements REST and SSE endpoints versioned under /api/v1 complying with System 
 """
 from __future__ import annotations
 
+import os
 import httpx
 import psutil
 from datetime import datetime, timezone
