@@ -10,7 +10,12 @@ models/
 llama_bin/
 bin/
 
-# Logs and Temporary Files
+# Database & Runtime State
+data/*.db
+data/*.db-*
+data/*.sqlite
+data/*.sqlite-*
+data/*.tmp
 *.log
 __pycache__/
 *.py[cod]

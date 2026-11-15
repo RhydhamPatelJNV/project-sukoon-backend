@@ -1,27 +1,31 @@
 """
 Project Sukoon — FastAPI Control Plane & Telemetry Backend
 Implements REST and SSE endpoints versioned under /api/v1 complying with System Architecture §5, §6, §7.
+Includes persistent SQLite ledger, persistent paper portfolio, and autonomous quantitative trader loop.
 """
 from __future__ import annotations
 
 import os
-import httpx
-import psutil
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+import httpx
+import psutil
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from sukoon.core.clock import USMarketCalendar
 from sukoon.core.events import EventEnvelope, EventType
 from sukoon.core.ledger import EventLedger
-from sukoon.core.clock import USMarketCalendar
+from sukoon.cortex.catalog import get_specialist, list_all_specialists
 from sukoon.data.symbols import SymbolMaster
 from sukoon.guardian.engine import SukoonGuardianEngine
 from sukoon.guardian.models import GuardianPolicy
+from sukoon.ops.autonomous_trader import AutonomousTrader
 from sukoon.orders.models import Order, OrderAction, OrderType
 from sukoon.orders.paper_adapter import PaperPortfolio
-from sukoon.cortex.catalog import list_all_specialists, get_specialist
 from sukoon.research.registry import StrategyRegistry, StrategySpec
 
 # Initialize FastAPI App
@@ -40,23 +44,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root() -> Dict[str, Any]:
-    return {
-        "name": "Project Sukoon Production Control Plane",
-        "status": "OPERATIONAL",
-        "environment": os.getenv("SUKOON_ENV", "PAPER"),
-        "documentation": "/docs",
-        "telemetry": "/api/v1/system/resources",
-        "health": "/api/v1/system/health"
-    }
+# Persistent storage configuration
+BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.getenv("SUKOON_DATA_DIR", os.path.join(BACKEND_ROOT, "data"))
+os.makedirs(DATA_DIR, exist_ok=True)
+LEDGER_DB_PATH = os.path.join(DATA_DIR, "sukoon_ledger.db")
+PORTFOLIO_PATH = os.path.join(DATA_DIR, "paper_portfolio.json")
 
-# Shared in-process service state
-ledger = EventLedger(":memory:")
+# Shared in-process service state (backed by disk persistence)
+ledger = EventLedger(LEDGER_DB_PATH)
 symbol_master = SymbolMaster()
 guardian = SukoonGuardianEngine(symbol_master=symbol_master)
-paper_portfolio = PaperPortfolio(initial_cash=100000.0)
+paper_portfolio = PaperPortfolio(initial_cash=100000.0, persistence_path=PORTFOLIO_PATH)
 strategy_registry = StrategyRegistry()
+
+# Pre-register Production Quantitative Strategies
+strategy_registry.register(StrategySpec.create(
+    strategy_id="STRAT_MOMENTUM_TREND_01",
+    version="1.0.0",
+    name="Dual EMA Trend Breakout",
+    description="Captures directional momentum on 9/21 EMA crossover with volume & RSI confirmation.",
+    universe=["SPY", "QQQ", "AAPL", "MSFT", "NVDA"],
+    timeframe="1m",
+    parameters={"fast_ema": 9, "slow_ema": 21, "rsi_min": 48.0, "rsi_max": 65.0, "max_hold_bars": 60},
+    source_code="def eval(p): return p.fast_ema > p.slow_ema and 48 < p.rsi < 65"
+))
+
+strategy_registry.register(StrategySpec.create(
+    strategy_id="STRAT_MEAN_REVERSION_01",
+    version="1.0.0",
+    name="RSI Mean Reversion Alpha",
+    description="Identifies oversold liquidity cascades (RSI < 32) with dynamic reversion targets.",
+    universe=["SPY", "QQQ", "AAPL", "MSFT", "NVDA"],
+    timeframe="1m",
+    parameters={"rsi_period": 14, "oversold_threshold": 32.0, "take_profit_pct": 2.5, "stop_loss_pct": 1.5},
+    source_code="def eval(p): return p.rsi < 32.0"
+))
+
+strategy_registry.register(StrategySpec.create(
+    strategy_id="STRAT_CORTEX_ALPHA_01",
+    version="1.0.0",
+    name="Autonomous Quant LLM Specialist",
+    description="Groq AI Quantitative Specialist reasoning on macroeconomic regime and multi-factor alpha.",
+    universe=["SPY", "QQQ", "AAPL", "MSFT", "NVDA"],
+    timeframe="5m",
+    parameters={"model": "qwen/qwen3.8-27b", "temperature": 0.2, "confidence_cutoff": 0.75},
+    source_code="def eval(p): return groq.analyze(p).confidence >= 0.75"
+))
+
+# Instantiate Autonomous Trader Agent
+autonomous_trader = AutonomousTrader(
+    portfolio=paper_portfolio,
+    guardian=guardian,
+    ledger=ledger,
+    registry=strategy_registry,
+    scan_interval_seconds=30
+)
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    """Activates the autonomous quant scan loop upon service boot."""
+    autonomous_trader.start_background_task()
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    """Gracefully halts the autonomous trader loop."""
+    autonomous_trader.stop()
 
 # System state
 SYSTEM_STATE = {
@@ -85,6 +138,18 @@ class PaperOrderRequest(BaseModel):
     order_type: OrderType = OrderType.LIMIT
     idempotency_key: str
 
+@app.get("/")
+def root() -> Dict[str, Any]:
+    return {
+        "name": "Project Sukoon Production Control Plane",
+        "status": "OPERATIONAL",
+        "environment": os.getenv("SUKOON_ENV", "PAPER"),
+        "documentation": "/docs",
+        "telemetry": "/api/v1/system/resources",
+        "health": "/api/v1/system/health",
+        "autonomous_agent": "/api/v1/autonomous/status"
+    }
+
 # ==========================================
 # 1. System Health & Resource Endpoints
 # ==========================================
@@ -97,6 +162,7 @@ def get_system_health() -> Dict[str, Any]:
         "safe_mode": SYSTEM_STATE["safe_mode"],
         "environment": SYSTEM_STATE["environment"],
         "guardian_active": not guardian.kill_switch.is_active,
+        "autonomous_trader_running": autonomous_trader.is_running,
         "timestamp_utc": datetime.now(timezone.utc).isoformat()
     }
 
@@ -105,9 +171,12 @@ def get_system_readiness() -> Dict[str, Any]:
     return {
         "ready": True,
         "database": "CONNECTED",
-        "llama_cpp_runtime": "AVAILABLE",
+        "sqlite_ledger_path": LEDGER_DB_PATH,
+        "portfolio_persistence_path": PORTFOLIO_PATH,
+        "groq_cloud_runtime": "ONLINE_READY" if os.getenv("GROQ_API_KEY") else "OFFLINE",
         "symbol_master": "READY",
-        "guardian_engine": "OPERATIONAL"
+        "guardian_engine": "OPERATIONAL",
+        "autonomous_trader": "ACTIVE"
     }
 
 @app.get("/api/v1/system/resources")
@@ -139,7 +208,7 @@ def get_system_resources() -> Dict[str, Any]:
         "memory_used_mb": used_mb,
         "memory_total_mb": total_mb,
         "memory_headroom_pct": headroom_pct,
-        "cloud_ceiling_mb": 12288, # 12 GB RAM Ceiling
+        "cloud_ceiling_mb": 12288,
         "storage_used_gb": 18.5,
         "storage_total_gb": 200.0,
         "llama_concurrency_slots": 1,
@@ -193,7 +262,6 @@ def cortex_chat(req: CortexChatRequest) -> Dict[str, Any]:
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
-
 
 @app.get("/api/v1/agents")
 def list_agents(group_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -369,6 +437,22 @@ def submit_paper_order(req: PaperOrderRequest) -> Dict[str, Any]:
         current_ask=market_ask
     )
 
+    # 5. Log execution event in persistent ledger
+    event = EventEnvelope.create(
+        event_type=EventType.ORDER_FILLED,
+        source="manual_paper_desk",
+        environment="PAPER",
+        payload={
+            "order_id": order.order_id,
+            "symbol": order.symbol,
+            "action": order.action.value,
+            "filled_qty": fill.filled_qty if fill else 0,
+            "fill_price": fill.fill_price if fill else 0.0,
+            "strategy_id": req.strategy_id
+        }
+    )
+    ledger.append(event)
+
     return {
         "status": "EXECUTED",
         "order_id": order.order_id,
@@ -376,8 +460,52 @@ def submit_paper_order(req: PaperOrderRequest) -> Dict[str, Any]:
         "remaining_cash": round(paper_portfolio.cash, 2)
     }
 
+@app.get("/api/v1/orders/history")
+def get_order_history(limit: int = Query(100, le=500)) -> List[Dict[str, Any]]:
+    """Returns persistent order execution history."""
+    return paper_portfolio.get_order_history(limit=limit)
+
+@app.post("/api/v1/portfolio/reset")
+def reset_portfolio() -> Dict[str, Any]:
+    """Resets paper trading account to $100,000 cash and clears positions."""
+    paper_portfolio.reset()
+    return {
+        "status": "PORTFOLIO_RESET",
+        "cash": round(paper_portfolio.cash, 2),
+        "positions": paper_portfolio.positions
+    }
+
 # ==========================================
-# 6. Event Ledger & Audit Endpoints
+# 6. Quantitative Strategies & Autonomous Agent
+# ==========================================
+
+@app.get("/api/v1/strategies")
+def list_strategies() -> List[Dict[str, Any]]:
+    """Returns all registered quantitative strategy specifications."""
+    return [asdict(s) for s in strategy_registry.list_strategies()]
+
+@app.get("/api/v1/autonomous/status")
+def get_autonomous_status() -> Dict[str, Any]:
+    """Returns live autonomous scanning and trading loop status."""
+    return autonomous_trader.get_status()
+
+@app.post("/api/v1/autonomous/toggle")
+def toggle_autonomous() -> Dict[str, Any]:
+    """Toggles the autonomous trader loop ON/OFF."""
+    if autonomous_trader.is_running:
+        autonomous_trader.stop()
+    else:
+        autonomous_trader.start_background_task()
+    return {"status": "SUCCESS", "is_running": autonomous_trader.is_running}
+
+@app.post("/api/v1/autonomous/scan")
+async def trigger_manual_scan() -> Dict[str, Any]:
+    """Triggers an immediate autonomous scan & execution cycle."""
+    await autonomous_trader.run_scan_cycle()
+    return autonomous_trader.get_status()
+
+# ==========================================
+# 7. Event Ledger & Audit Endpoints
 # ==========================================
 
 @app.get("/api/v1/events")
