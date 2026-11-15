@@ -24,9 +24,9 @@ from sukoon.data.symbols import SymbolMaster
 from sukoon.guardian.engine import SukoonGuardianEngine
 from sukoon.guardian.models import GuardianPolicy
 from sukoon.ops.autonomous_trader import AutonomousTrader
+from sukoon.evolution.strategy_manager import StrategyEvolutionManager
 from sukoon.orders.models import Order, OrderAction, OrderType
 from sukoon.orders.paper_adapter import PaperPortfolio
-from sukoon.research.registry import StrategyRegistry, StrategySpec
 
 # Initialize FastAPI App
 app = FastAPI(
@@ -50,54 +50,21 @@ DATA_DIR = os.getenv("SUKOON_DATA_DIR", os.path.join(BACKEND_ROOT, "data"))
 os.makedirs(DATA_DIR, exist_ok=True)
 LEDGER_DB_PATH = os.path.join(DATA_DIR, "sukoon_ledger.db")
 PORTFOLIO_PATH = os.path.join(DATA_DIR, "paper_portfolio.json")
+STRATEGY_PATH = os.path.join(DATA_DIR, "strategies_lifecycle.json")
 
 # Shared in-process service state (backed by disk persistence)
 ledger = EventLedger(LEDGER_DB_PATH)
 symbol_master = SymbolMaster()
 guardian = SukoonGuardianEngine(symbol_master=symbol_master)
 paper_portfolio = PaperPortfolio(initial_cash=100000.0, persistence_path=PORTFOLIO_PATH)
-strategy_registry = StrategyRegistry()
+strategy_evolution_mgr = StrategyEvolutionManager(persistence_path=STRATEGY_PATH)
 
-# Pre-register Production Quantitative Strategies
-strategy_registry.register(StrategySpec.create(
-    strategy_id="STRAT_MOMENTUM_TREND_01",
-    version="1.0.0",
-    name="Dual EMA Trend Breakout",
-    description="Captures directional momentum on 9/21 EMA crossover with volume & RSI confirmation.",
-    universe=["SPY", "QQQ", "AAPL", "MSFT", "NVDA"],
-    timeframe="1m",
-    parameters={"fast_ema": 9, "slow_ema": 21, "rsi_min": 48.0, "rsi_max": 65.0, "max_hold_bars": 60},
-    source_code="def eval(p): return p.fast_ema > p.slow_ema and 48 < p.rsi < 65"
-))
-
-strategy_registry.register(StrategySpec.create(
-    strategy_id="STRAT_MEAN_REVERSION_01",
-    version="1.0.0",
-    name="RSI Mean Reversion Alpha",
-    description="Identifies oversold liquidity cascades (RSI < 32) with dynamic reversion targets.",
-    universe=["SPY", "QQQ", "AAPL", "MSFT", "NVDA"],
-    timeframe="1m",
-    parameters={"rsi_period": 14, "oversold_threshold": 32.0, "take_profit_pct": 2.5, "stop_loss_pct": 1.5},
-    source_code="def eval(p): return p.rsi < 32.0"
-))
-
-strategy_registry.register(StrategySpec.create(
-    strategy_id="STRAT_CORTEX_ALPHA_01",
-    version="1.0.0",
-    name="Autonomous Quant LLM Specialist",
-    description="Groq AI Quantitative Specialist reasoning on macroeconomic regime and multi-factor alpha.",
-    universe=["SPY", "QQQ", "AAPL", "MSFT", "NVDA"],
-    timeframe="5m",
-    parameters={"model": "qwen/qwen3.8-27b", "temperature": 0.2, "confidence_cutoff": 0.75},
-    source_code="def eval(p): return groq.analyze(p).confidence >= 0.75"
-))
-
-# Instantiate Autonomous Trader Agent
+# Instantiate Autonomous Trader Agent with Strategy Evolution Manager
 autonomous_trader = AutonomousTrader(
     portfolio=paper_portfolio,
     guardian=guardian,
     ledger=ledger,
-    registry=strategy_registry,
+    evolution_mgr=strategy_evolution_mgr,
     scan_interval_seconds=30
 )
 
@@ -479,10 +446,44 @@ def reset_portfolio() -> Dict[str, Any]:
 # 6. Quantitative Strategies & Autonomous Agent
 # ==========================================
 
+# Request model for manual strategy actions
+class StrategyActionRequest(BaseModel):
+    action: str  # ACTIVATE, PAUSE, DROP, AUTO
+
 @app.get("/api/v1/strategies")
 def list_strategies() -> List[Dict[str, Any]]:
-    """Returns all registered quantitative strategy specifications."""
-    return [asdict(s) for s in strategy_registry.list_strategies()]
+    """Returns all dynamically evolved quantitative strategies with confidence & lifecycle."""
+    return strategy_evolution_mgr.list_all_strategies()
+
+@app.get("/api/v1/evolution/strategies")
+def get_evolution_strategies() -> List[Dict[str, Any]]:
+    """Returns all dynamically evolved strategies with confidence scores and telemetry."""
+    return strategy_evolution_mgr.list_all_strategies()
+
+@app.post("/api/v1/evolution/generate")
+async def generate_autonomous_hypothesis() -> Dict[str, Any]:
+    """Forces system to autonomously synthesize and backtest a brand new strategy."""
+    strat = await strategy_evolution_mgr.generate_autonomous_hypothesis("Operator manual trigger from dashboard")
+    return asdict(strat)
+
+@app.post("/api/v1/evolution/strategy/{strategy_id}/action")
+def mutate_strategy_lifecycle(strategy_id: str, req: StrategyActionRequest) -> Dict[str, Any]:
+    """Operator manual run change: ACTIVATE, PAUSE, DROP, or restore AUTO."""
+    try:
+        strat = strategy_evolution_mgr.set_user_action(strategy_id, req.action)
+        return asdict(strat)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.post("/api/v1/evolution/simultaneous/toggle")
+def toggle_simultaneous_execution() -> Dict[str, Any]:
+    """Toggles concurrent multi-strategy execution mode."""
+    strategy_evolution_mgr.simultaneous_enabled = not strategy_evolution_mgr.simultaneous_enabled
+    strategy_evolution_mgr.save_to_disk()
+    return {
+        "status": "SUCCESS",
+        "simultaneous_enabled": strategy_evolution_mgr.simultaneous_enabled
+    }
 
 @app.get("/api/v1/autonomous/status")
 def get_autonomous_status() -> Dict[str, Any]:

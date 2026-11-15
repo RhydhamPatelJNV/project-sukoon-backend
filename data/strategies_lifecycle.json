@@ -1,0 +1,147 @@
+{
+  "last_updated_utc": "2026-11-15T10:57:48.189982+00:00",
+  "simultaneous_enabled": true,
+  "strategies": [
+    {
+      "strategy_id": "AUTO_EMA_TREND_MOMENTUM",
+      "name": "Adaptive Dual EMA Momentum Crossover",
+      "hypothesis": "System detected persistent upward trend continuation in Mega-cap US Equities during regular market hours when Fast EMA(9) crosses above Slow EMA(21) with positive momentum.",
+      "factor_type": "MOMENTUM",
+      "universe": [
+        "SPY",
+        "QQQ",
+        "AAPL",
+        "MSFT",
+        "NVDA"
+      ],
+      "timeframe": "1m",
+      "parameters": {
+        "fast_period": 9,
+        "slow_period": 21,
+        "rsi_min": 48.0,
+        "rsi_max": 65.0,
+        "take_profit_pct": 2.2,
+        "stop_loss_pct": 1.2
+      },
+      "lifecycle": "CONFIDENT_ACTIVE",
+      "confidence_score": 78.5,
+      "confidence_rationale": "Upheld: Strong historical Sharpe ratio (2.1) and high trend resilience across liquid ETF benchmarks.",
+      "total_trades": 0,
+      "winning_trades": 0,
+      "losing_trades": 0,
+      "win_rate": 0.0,
+      "profit_factor": 1.0,
+      "sharpe_ratio": 0.0,
+      "total_pnl": 0.0,
+      "max_drawdown_pct": 0.0,
+      "consecutive_losses": 0,
+      "created_at_utc": "2026-11-15T10:57:34.350246+00:00",
+      "last_evaluated_utc": "2026-11-15T10:57:34.350246+00:00",
+      "is_user_overridden": false
+    },
+    {
+      "strategy_id": "AUTO_RSI_VOL_REVERSION",
+      "name": "RSI Liquidity Sweep Mean Reversion",
+      "hypothesis": "Oversold intraday cascades (RSI < 30) exhibit rapid mean-reversion bounces when broader index volatility remains bounded.",
+      "factor_type": "MEAN_REVERSION",
+      "universe": [
+        "SPY",
+        "QQQ",
+        "AAPL",
+        "NVDA"
+      ],
+      "timeframe": "1m",
+      "parameters": {
+        "rsi_period": 14,
+        "oversold_threshold": 32.0,
+        "overbought_threshold": 70.0,
+        "take_profit_pct": 2.0,
+        "stop_loss_pct": 1.5
+      },
+      "lifecycle": "INCUBATING",
+      "confidence_score": 68.0,
+      "confidence_rationale": "Incubating: Promising statistical edge on mean reversion; accumulating live execution fill samples.",
+      "total_trades": 0,
+      "winning_trades": 0,
+      "losing_trades": 0,
+      "win_rate": 0.0,
+      "profit_factor": 1.0,
+      "sharpe_ratio": 0.0,
+      "total_pnl": 0.0,
+      "max_drawdown_pct": 0.0,
+      "consecutive_losses": 0,
+      "created_at_utc": "2026-11-15T10:57:34.350246+00:00",
+      "last_evaluated_utc": "2026-11-15T10:57:34.350246+00:00",
+      "is_user_overridden": false
+    },
+    {
+      "strategy_id": "AUTO_VOLATILITY_EXPANSION",
+      "name": "ATR Volatility Expansion Breakout",
+      "hypothesis": "Compression in ATR followed by high-volume range breakout creates directional continuation for liquid tech equities.",
+      "factor_type": "VOLATILITY_BREAKOUT",
+      "universe": [
+        "NVDA",
+        "AAPL",
+        "QQQ"
+      ],
+      "timeframe": "5m",
+      "parameters": {
+        "atr_period": 14,
+        "expansion_mult": 1.8,
+        "take_profit_pct": 3.0,
+        "stop_loss_pct": 1.8
+      },
+      "lifecycle": "PROBATION",
+      "confidence_score": 58.0,
+      "confidence_rationale": "Probationary: Parameter sensitivity observed in high-drawdown sessions; sizing restrained to 50%.",
+      "total_trades": 0,
+      "winning_trades": 0,
+      "losing_trades": 0,
+      "win_rate": 0.0,
+      "profit_factor": 1.0,
+      "sharpe_ratio": 0.0,
+      "total_pnl": 0.0,
+      "max_drawdown_pct": 0.0,
+      "consecutive_losses": 0,
+      "created_at_utc": "2026-11-15T10:57:34.350246+00:00",
+      "last_evaluated_utc": "2026-11-15T10:57:34.350246+00:00",
+      "is_user_overridden": false
+    },
+    {
+      "strategy_id": "AUTO_MOMENTUM_74023F",
+      "name": "Autonomous Momentum Alpha #4",
+      "hypothesis": "System identified potential alpha exploitation under MOMENTUM factor dynamics.",
+      "factor_type": "MOMENTUM",
+      "universe": [
+        "SPY",
+        "QQQ",
+        "AAPL",
+        "MSFT",
+        "NVDA"
+      ],
+      "timeframe": "1m",
+      "parameters": {
+        "fast_period": 11,
+        "slow_period": 23,
+        "rsi_threshold": 29.1,
+        "take_profit_pct": 2.48,
+        "stop_loss_pct": 1.18
+      },
+      "lifecycle": "DROPPED",
+      "confidence_score": 30.0,
+      "confidence_rationale": "Manually dropped and retired by operator from dashboard.",
+      "total_trades": 0,
+      "winning_trades": 0,
+      "losing_trades": 0,
+      "win_rate": 0.0,
+      "profit_factor": 1.0,
+      "sharpe_ratio": 0.0,
+      "total_pnl": 0.0,
+      "max_drawdown_pct": 0.0,
+      "consecutive_losses": 0,
+      "created_at_utc": "2026-11-15T10:57:48.177416+00:00",
+      "last_evaluated_utc": "2026-11-15T10:57:48.177416+00:00",
+      "is_user_overridden": true
+    }
+  ]
+}

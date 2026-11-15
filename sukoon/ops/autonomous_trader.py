@@ -1,7 +1,8 @@
 """
 Project Sukoon — Autonomous Quantitative Trading Agent Loop
-Continuously evaluates quantitative strategies, queries Groq AI Specialists for trade rationales,
-enforces Sukoon Guardian deterministic pre-trade risk checks, and dispatches paper orders.
+Continuously evaluates dynamically evolved strategies, queries Groq AI Specialists for trade rationales,
+enforces Sukoon Guardian deterministic pre-trade risk checks, records trade outcomes to update confidence,
+and moves on to new strategies when confidence drops.
 """
 from __future__ import annotations
 
@@ -17,27 +18,27 @@ import httpx
 from sukoon.core.clock import USMarketCalendar
 from sukoon.core.events import EventEnvelope, EventType
 from sukoon.core.ledger import EventLedger
+from sukoon.evolution.strategy_manager import StrategyEvolutionManager, StrategyLifecycle
 from sukoon.guardian.engine import SukoonGuardianEngine
 from sukoon.orders.models import Order, OrderAction, OrderState, OrderType
 from sukoon.orders.paper_adapter import PaperPortfolio
-from sukoon.research.registry import StrategyRegistry, StrategySpec
 
 
 class AutonomousTrader:
-    """Autonomous quantitative scanning and execution agent."""
+    """Autonomous quantitative scanning and execution agent with continuous strategy evolution."""
 
     def __init__(
         self,
         portfolio: PaperPortfolio,
         guardian: SukoonGuardianEngine,
         ledger: EventLedger,
-        registry: StrategyRegistry,
+        evolution_mgr: StrategyEvolutionManager,
         scan_interval_seconds: int = 30
     ) -> None:
         self.portfolio = portfolio
         self.guardian = guardian
         self.ledger = ledger
-        self.registry = registry
+        self.evolution_mgr = evolution_mgr
         self.scan_interval_seconds = scan_interval_seconds
         
         self.is_running = True
@@ -78,7 +79,6 @@ class AutonomousTrader:
         """Simulates realistic micro-movements for 24/7 autonomous backtesting & paper operations."""
         quotes = {}
         for sym, price in self._price_state.items():
-            # Random walk +/- 0.15% per cycle
             drift = (random.random() - 0.49) * 0.003
             new_price = round(price * (1.0 + drift), 2)
             self._price_state[sym] = new_price
@@ -125,18 +125,18 @@ class AutonomousTrader:
             ema = (p - ema) * multiplier + ema
         return round(ema, 2)
 
-    async def _query_groq_rationale(self, symbol: str, action: str, price: float, rsi: float, reason: str) -> str:
+    async def _query_groq_rationale(self, symbol: str, action: str, price: float, rsi: float, reason: str, strat_name: str, confidence: float) -> str:
         """Asks Groq AI Quantitative Specialist for 1-sentence analytical reasoning."""
         groq_api_key = os.getenv("GROQ_API_KEY", "")
         if not groq_api_key:
-            return f"Technical trigger: {reason} (RSI {rsi}). Pre-trade parameters strictly satisfied."
+            return f"[{strat_name} | Conf: {confidence}%] {reason} (RSI {rsi}). Risk parameters strictly met."
 
         url = "https://api.groq.com/openai/v1/chat/completions"
         model_name = os.getenv("GROQ_MODEL_ID", "qwen/qwen3.8-27b")
         headers = {"Authorization": f"Bearer {groq_api_key}"}
         prompt = (
             f"You are the Project Sukoon Autonomous Quant Specialist. "
-            f"Strategy proposes {action} {symbol} at ${price:.2f} due to {reason} with RSI={rsi:.1f}. "
+            f"Strategy '{strat_name}' (Confidence: {confidence}%) proposes {action} {symbol} at ${price:.2f} due to {reason} (RSI={rsi:.1f}). "
             f"Give a concise 1-sentence risk-adjusted quantitative rationale supporting this trade."
         )
         payload = {
@@ -156,10 +156,10 @@ class AutonomousTrader:
                     return data["choices"][0]["message"]["content"].strip()
         except Exception:
             pass
-        return f"Quant model affirms {action} proposal on {symbol}: {reason} verified against risk budget."
+        return f"Quant model affirms {action} on {symbol} via {strat_name} (Confidence: {confidence}%): {reason}."
 
     async def run_scan_cycle(self) -> None:
-        """Executes a single quantitative scanning and order generation iteration."""
+        """Executes a single quantitative scanning and multi-strategy execution iteration."""
         if not self.is_running:
             return
 
@@ -170,166 +170,217 @@ class AutonomousTrader:
 
         # Check market status for logging
         mkt_status = USMarketCalendar.current_status()
+        
+        # 1. Retrieve runnable strategies
+        active_strats = self.evolution_mgr.get_runnable_strategies()
+
+        # If pool has dropped too many low-confidence strategies, autonomously discover/synthesize new ones!
+        if len(active_strats) < 2:
+            self.log("INFO", "Active strategy pool below threshold. Autonomously synthesizing new strategy hypothesis...")
+            new_strat = await self.evolution_mgr.generate_autonomous_hypothesis("Maintain minimum pool of concurrent strategies")
+            active_strats.append(new_strat)
+
         self.log(
             "INFO",
-            f"Scanning universe {list(quotes.keys())} - Market phase: {mkt_status.get('trading_phase', 'UNKNOWN')}",
-            {"total_scans": self.total_scans, "trading_phase": mkt_status.get("trading_phase")}
+            f"Scanning universe {list(quotes.keys())} across {len(active_strats)} active strategies "
+            f"(Simultaneous: {self.evolution_mgr.simultaneous_enabled}) - Phase: {mkt_status.get('trading_phase', 'UNKNOWN')}",
+            {"total_scans": self.total_scans, "active_strategies": [s.strategy_id for s in active_strats]}
         )
 
-        for sym, q in quotes.items():
-            history = self._price_history.get(sym, [])
-            if len(history) < 15:
-                continue
+        executed_this_cycle = 0
 
-            current_price = q["mid"]
-            rsi = self._compute_rsi(history, period=14)
-            fast_ema = self._compute_ema(history, period=9)
-            slow_ema = self._compute_ema(history, period=21)
+        # 2. Evaluate each strategy simultaneously
+        for strat in active_strats:
+            if not self.evolution_mgr.simultaneous_enabled and executed_this_cycle >= 1:
+                break
 
-            current_pos = self.portfolio.positions.get(sym, 0)
-            avg_cost = self.portfolio.cost_basis.get(sym, current_price)
+            params = strat.parameters
+            fast_p = params.get("fast_period", 9)
+            slow_p = params.get("slow_period", 21)
+            take_profit_pct = params.get("take_profit_pct", 2.2) / 100.0
+            stop_loss_pct = params.get("stop_loss_pct", 1.2) / 100.0
+            rsi_oversold = params.get("oversold_threshold", 32.0)
 
-            action: Optional[OrderAction] = None
-            strategy_id = "STRAT_MOMENTUM_TREND_01"
-            reason = ""
+            for sym in strat.universe:
+                if sym not in quotes:
+                    continue
 
-            # 1. Check Exit / Take Profit / Stop Loss if we already hold shares
-            if current_pos > 0:
-                pnl_pct = (current_price - avg_cost) / avg_cost
-                if pnl_pct >= 0.025:  # Take profit at +2.5%
-                    action = OrderAction.SELL
-                    strategy_id = "STRAT_MEAN_REVERSION_01"
-                    reason = f"Take profit target reached (+{pnl_pct*100:.2f}%)"
-                elif pnl_pct <= -0.015:  # Stop loss at -1.5%
-                    action = OrderAction.SELL
-                    strategy_id = "STRAT_RISK_GUARD_01"
-                    reason = f"Stop-loss protection triggered ({pnl_pct*100:.2f}%)"
-                elif rsi > 72.0:  # Overbought exit
-                    action = OrderAction.SELL
-                    strategy_id = "STRAT_MEAN_REVERSION_01"
-                    reason = f"RSI overbought exhaustion ({rsi:.1f} > 70)"
+                q = quotes[sym]
+                history = self._price_history.get(sym, [])
+                if len(history) < 15:
+                    continue
 
-            # 2. Check Entry if we don't have max position
-            elif current_pos == 0:
-                if rsi < 32.0:  # Oversold bounce
-                    action = OrderAction.BUY
-                    strategy_id = "STRAT_MEAN_REVERSION_01"
-                    reason = f"RSI oversold rebound detected ({rsi:.1f} < 32)"
-                elif fast_ema > slow_ema and 48.0 < rsi < 65.0:  # Bullish trend alignment
-                    action = OrderAction.BUY
-                    strategy_id = "STRAT_MOMENTUM_TREND_01"
-                    reason = f"EMA fast cross above slow ({fast_ema:.2f} > {slow_ema:.2f})"
+                current_price = q["mid"]
+                rsi = self._compute_rsi(history, period=14)
+                fast_ema = self._compute_ema(history, period=fast_p)
+                slow_ema = self._compute_ema(history, period=slow_p)
 
-            if action is None:
-                continue
+                current_pos = self.portfolio.positions.get(sym, 0)
+                avg_cost = self.portfolio.cost_basis.get(sym, current_price)
 
-            # Calculate appropriate share quantity complying with max notional $4,000 per trade
-            target_notional = 3500.0
-            qty = max(1, int(target_notional / current_price))
-            if action == OrderAction.SELL:
-                qty = current_pos  # Sell full open position
+                action: Optional[OrderAction] = None
+                reason = ""
+                trade_pnl = 0.0
+                trade_ret = 0.0
 
-            # Update last signal
-            self.last_signal = {
-                "symbol": sym,
-                "action": action.value,
-                "strategy_id": strategy_id,
-                "price": current_price,
-                "quantity": qty,
-                "reason": reason,
-                "rsi": rsi,
-                "timestamp_utc": now_str
-            }
+                # Exit / Take Profit / Stop Loss evaluation
+                if current_pos > 0:
+                    pnl_pct = (current_price - avg_cost) / avg_cost
+                    if pnl_pct >= take_profit_pct:
+                        action = OrderAction.SELL
+                        reason = f"Take profit target reached (+{pnl_pct*100:.2f}%)"
+                        trade_ret = pnl_pct
+                        trade_pnl = (current_price - avg_cost) * current_pos
+                    elif pnl_pct <= -stop_loss_pct:
+                        action = OrderAction.SELL
+                        reason = f"Stop-loss protection triggered ({pnl_pct*100:.2f}%)"
+                        trade_ret = pnl_pct
+                        trade_pnl = (current_price - avg_cost) * current_pos
+                    elif rsi > 72.0:
+                        action = OrderAction.SELL
+                        reason = f"RSI overbought exhaustion ({rsi:.1f} > 70)"
+                        trade_ret = pnl_pct
+                        trade_pnl = (current_price - avg_cost) * current_pos
 
-            # Consult Groq AI Specialist for analytical rationale
-            ai_rationale = await self._query_groq_rationale(sym, action.value, current_price, rsi, reason)
+                # Entry evaluation
+                elif current_pos == 0:
+                    if rsi < rsi_oversold:
+                        action = OrderAction.BUY
+                        reason = f"RSI oversold rebound detected ({rsi:.1f} < {rsi_oversold})"
+                    elif fast_ema > slow_ema and 48.0 < rsi < 65.0:
+                        action = OrderAction.BUY
+                        reason = f"EMA fast cross above slow ({fast_ema:.2f} > {slow_ema:.2f})"
 
-            # Construct Order object with marketable limit crossing the spread for immediate execution
-            exec_limit_price = round(q["ask"] * 1.001 if action == OrderAction.BUY else q["bid"] * 0.999, 2)
-            order = Order.create(
-                strategy_id=strategy_id,
-                strategy_version="1.0.0",
-                symbol=sym,
-                action=action,
-                quantity=qty,
-                limit_price=exec_limit_price,
-                order_type=OrderType.LIMIT,
-                environment="PAPER"
-            )
+                if action is None:
+                    continue
 
-            # Evaluate with Sukoon Guardian (deterministic pre-trade risk engine)
-            decision = self.guardian.evaluate_order(
-                order=order,
-                current_cash=self.portfolio.cash,
-                portfolio_equity=self.portfolio.get_equity(self._price_state),
-                current_position_qty=current_pos,
-                latest_quote_age_seconds=0.5,
-                is_reconciled=True,
-                intraday_loss_pct=0.0,
-                trailing_drawdown_pct=0.0,
-                active_feed="iex"
-            )
+                # Scale capital by strategy confidence score!
+                # High confidence (>=75%) gets full allocation; probation gets scaled down
+                confidence_ratio = max(0.3, strat.confidence_score / 100.0)
+                target_notional = 3500.0 * confidence_ratio
+                qty = max(1, int(target_notional / current_price))
+                if action == OrderAction.SELL:
+                    qty = current_pos
 
-            if not decision.approved:
-                self.log(
-                    "WARNING",
-                    f"Order for {sym} VETOED by Sukoon Guardian: {', '.join(decision.reasons)}",
-                    {"order_id": order.order_id, "reasons": decision.reasons}
-                )
-                continue
-
-            # Guardian Approved: monotonically transition state
-            order.guardian_token = decision.pass_token
-            order.transition_to(OrderState.VALIDATED, "Strategy & data validation passed")
-            order.transition_to(OrderState.GUARDIAN_APPROVED, f"Guardian Token: {decision.pass_token[:8]}")
-
-            # Submit and execute on Paper Adapter
-            idempotency_key = f"auto-{order.order_id}-{int(time.time())}"
-            fill = self.portfolio.submit_order(
-                order=order,
-                idempotency_key=idempotency_key,
-                current_bid=q["bid"],
-                current_ask=q["ask"]
-            )
-
-            if fill:
-                self.last_trade = {
-                    "order_id": order.order_id,
+                self.last_signal = {
                     "symbol": sym,
                     "action": action.value,
-                    "quantity": fill.filled_qty,
-                    "fill_price": fill.fill_price,
-                    "strategy_id": strategy_id,
-                    "rationale": ai_rationale,
+                    "strategy_id": strat.strategy_id,
+                    "strategy_name": strat.name,
+                    "price": current_price,
+                    "quantity": qty,
+                    "reason": reason,
+                    "rsi": rsi,
+                    "confidence_score": strat.confidence_score,
                     "timestamp_utc": now_str
                 }
 
-                # Record event in append-only ledger
-                event = EventEnvelope.create(
-                    event_type=EventType.ORDER_FILLED,
-                    source="autonomous_quant_trader",
-                    environment="PAPER",
-                    payload={
+                # AI quantitative rationale
+                ai_rationale = await self._query_groq_rationale(
+                    sym, action.value, current_price, rsi, reason, strat.name, strat.confidence_score
+                )
+
+                # Order construction
+                exec_limit_price = round(q["ask"] * 1.001 if action == OrderAction.BUY else q["bid"] * 0.999, 2)
+                order = Order.create(
+                    strategy_id=strat.strategy_id,
+                    strategy_version="1.0.0",
+                    symbol=sym,
+                    action=action,
+                    quantity=qty,
+                    limit_price=exec_limit_price,
+                    order_type=OrderType.LIMIT,
+                    environment="PAPER"
+                )
+
+                # Guardian Risk Clearance
+                decision = self.guardian.evaluate_order(
+                    order=order,
+                    current_cash=self.portfolio.cash,
+                    portfolio_equity=self.portfolio.get_equity(self._price_state),
+                    current_position_qty=current_pos,
+                    latest_quote_age_seconds=0.5,
+                    is_reconciled=True,
+                    intraday_loss_pct=0.0,
+                    trailing_drawdown_pct=0.0,
+                    active_feed="iex"
+                )
+
+                if not decision.approved:
+                    self.log(
+                        "WARNING",
+                        f"Order for {sym} ({strat.name}) VETOED by Guardian: {', '.join(decision.reasons)}",
+                        {"strategy_id": strat.strategy_id, "reasons": decision.reasons}
+                    )
+                    continue
+
+                order.guardian_token = decision.pass_token
+                order.transition_to(OrderState.VALIDATED, "Pre-trade risk approved")
+                order.transition_to(OrderState.GUARDIAN_APPROVED, f"Guardian Token: {decision.pass_token[:8]}")
+
+                idempotency_key = f"auto-{order.order_id}-{int(time.time())}"
+                fill = self.portfolio.submit_order(
+                    order=order,
+                    idempotency_key=idempotency_key,
+                    current_bid=q["bid"],
+                    current_ask=q["ask"]
+                )
+
+                if fill:
+                    executed_this_cycle += 1
+                    self.last_trade = {
                         "order_id": order.order_id,
                         "symbol": sym,
                         "action": action.value,
-                        "filled_qty": fill.filled_qty,
+                        "quantity": fill.filled_qty,
                         "fill_price": fill.fill_price,
-                        "strategy_id": strategy_id,
-                        "ai_rationale": ai_rationale,
-                        "guardian_decision_id": decision.decision_id
+                        "strategy_id": strat.strategy_id,
+                        "strategy_name": strat.name,
+                        "confidence_score": strat.confidence_score,
+                        "rationale": ai_rationale,
+                        "timestamp_utc": now_str
                     }
-                )
-                self.ledger.append(event)
 
-                self.log(
-                    "SUCCESS",
-                    f"AUTONOMOUS TRADE EXECUTED: {action.value} {fill.filled_qty} {sym} @ ${fill.fill_price:.2f}",
-                    {"rationale": ai_rationale, "strategy": strategy_id}
-                )
+                    # If this was a SELL, record outcome and re-evaluate strategy confidence!
+                    if action == OrderAction.SELL:
+                        self.evolution_mgr.record_trade_outcome(strat.strategy_id, trade_pnl, trade_ret)
+                        if strat.lifecycle == StrategyLifecycle.DROPPED:
+                            self.log(
+                                "WARNING",
+                                f"STRATEGY DROPPED: {strat.name} retired due to low confidence ({strat.confidence_score}%). "
+                                f"Autonomous engine will transition to replacement strategy.",
+                                {"strategy_id": strat.strategy_id, "confidence": strat.confidence_score}
+                            )
 
-                # Only 1 trade per cycle to prevent overtrading
-                break
+                    # Ledger event
+                    event = EventEnvelope.create(
+                        event_type=EventType.ORDER_FILLED,
+                        source="autonomous_quant_trader",
+                        environment="PAPER",
+                        payload={
+                            "order_id": order.order_id,
+                            "symbol": sym,
+                            "action": action.value,
+                            "filled_qty": fill.filled_qty,
+                            "fill_price": fill.fill_price,
+                            "strategy_id": strat.strategy_id,
+                            "strategy_name": strat.name,
+                            "confidence_score": strat.confidence_score,
+                            "ai_rationale": ai_rationale
+                        }
+                    )
+                    self.ledger.append(event)
+
+                    self.log(
+                        "SUCCESS",
+                        f"AUTONOMOUS EXECUTION: {action.value} {fill.filled_qty} {sym} @ ${fill.fill_price:.2f} "
+                        f"[{strat.name} | Conf: {strat.confidence_score}%]",
+                        {"rationale": ai_rationale, "strategy": strat.strategy_id}
+                    )
+
+                    # If not simultaneous, exit inner loop
+                    if not self.evolution_mgr.simultaneous_enabled:
+                        break
 
     async def _loop(self) -> None:
         """Continuous background execution loop."""
@@ -357,6 +408,7 @@ class AutonomousTrader:
 
     def get_status(self) -> Dict[str, Any]:
         """Telemetry status payload for frontend dashboard."""
+        runnable = self.evolution_mgr.get_runnable_strategies()
         return {
             "is_running": self.is_running,
             "total_scans": self.total_scans,
@@ -364,6 +416,8 @@ class AutonomousTrader:
             "last_scan_utc": self.last_scan_utc,
             "last_signal": self.last_signal,
             "last_trade": self.last_trade,
-            "active_strategies_count": len(self.registry.list_strategies()),
+            "simultaneous_enabled": self.evolution_mgr.simultaneous_enabled,
+            "active_strategies_count": len(runnable),
+            "total_strategies_discovered": len(self.evolution_mgr.strategies),
             "recent_logs": self.recent_logs[-15:]
         }
