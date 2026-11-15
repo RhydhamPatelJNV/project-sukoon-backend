@@ -31,6 +31,8 @@ from sukoon.data.symbols import SymbolMaster
 from sukoon.guardian.engine import SukoonGuardianEngine
 from sukoon.guardian.models import GuardianPolicy
 from sukoon.ops.autonomous_trader import AutonomousTrader
+from sukoon.ops.telegram import TelegramAlertDispatcher
+from sukoon.adapters.finnhub_news import FinnhubNewsAdapter
 from sukoon.evolution.strategy_manager import StrategyEvolutionManager
 from sukoon.orders.models import Order, OrderAction, OrderType
 from sukoon.orders.paper_adapter import PaperPortfolio
@@ -66,14 +68,17 @@ guardian = SukoonGuardianEngine(symbol_master=symbol_master)
 paper_portfolio = PaperPortfolio(initial_cash=100000.0, persistence_path=PORTFOLIO_PATH)
 strategy_evolution_mgr = StrategyEvolutionManager(persistence_path=STRATEGY_PATH)
 specialist_monitor = SpecialistMonitor()
+telegram_dispatcher = TelegramAlertDispatcher()
+news_adapter = FinnhubNewsAdapter()
 
-# Instantiate Autonomous Trader Agent with Strategy Evolution Manager
+# Instantiate Autonomous Trader Agent with Strategy Evolution Manager & Telegram Dispatcher
 autonomous_trader = AutonomousTrader(
     portfolio=paper_portfolio,
     guardian=guardian,
     ledger=ledger,
     evolution_mgr=strategy_evolution_mgr,
-    scan_interval_seconds=30
+    scan_interval_seconds=30,
+    telegram_dispatcher=telegram_dispatcher
 )
 
 @app.on_event("startup")
@@ -372,6 +377,16 @@ def submit_paper_order(req: PaperOrderRequest) -> Dict[str, Any]:
     )
 
     if not decision.approved:
+        if telegram_dispatcher.is_configured:
+            try:
+                telegram_dispatcher.dispatch_guardian_alert(
+                    approved=False,
+                    symbol=order.symbol,
+                    reasons=decision.reasons,
+                    cash=paper_portfolio.cash
+                )
+            except Exception:
+                pass
         return {
             "status": "VETOED_BY_GUARDIAN",
             "decision_id": decision.decision_id,
@@ -392,6 +407,22 @@ def submit_paper_order(req: PaperOrderRequest) -> Dict[str, Any]:
         current_bid=market_bid,
         current_ask=market_ask
     )
+
+    # Dispatch live Telegram trade alert
+    if telegram_dispatcher.is_configured:
+        try:
+            telegram_dispatcher.dispatch_trade_alert(
+                action=req.action.value,
+                symbol=req.symbol,
+                quantity=req.quantity,
+                price=fill.fill_price if fill else req.limit_price,
+                strategy_id=req.strategy_id,
+                order_id=order.order_id,
+                status="ACCEPTED_QUEUED" if getattr(paper_portfolio, "alpaca_broker", None) else "FILLED",
+                alpaca_queued=bool(getattr(paper_portfolio, "alpaca_broker", None) and paper_portfolio.alpaca_broker.is_configured)
+            )
+        except Exception:
+            pass
 
     # 5. Log execution event in persistent ledger
     event = EventEnvelope.create(
@@ -508,3 +539,95 @@ def toggle_weekend_replay_demo() -> Dict[str, Any]:
 def get_events(limit: int = Query(50, le=200)) -> List[Dict[str, Any]]:
     events = ledger.get_events(limit=limit)
     return [e.to_dict() for e in events]
+
+# ==========================================
+# 8. Real-Time Market Intelligence & SEC Feed (Finnhub & EDGAR)
+# ==========================================
+
+@app.get("/api/v1/market/news")
+def get_market_news(
+    category: str = Query("general", description="News category: general, forex, crypto, merger"),
+    symbol: Optional[str] = Query(None, description="Optional symbol filter e.g. AAPL, MSFT, NVDA"),
+    force_refresh: bool = Query(False, description="Force fresh fetch bypassing cache")
+) -> Dict[str, Any]:
+    """Returns real-time financial market news with prompt-injection defense and sentiment scoring."""
+    news = news_adapter.fetch_market_news(category=category, force_refresh=force_refresh)
+    
+    if symbol:
+        sym_clean = symbol.upper().strip()
+        news = [n for n in news if sym_clean in n.get("related_symbols", []) or sym_clean in n.get("headline", "").upper()]
+
+    # Calculate aggregate sentiment metrics
+    total = len(news)
+    bullish_count = sum(1 for n in news if n.get("sentiment") == "BULLISH")
+    bearish_count = sum(1 for n in news if n.get("sentiment") == "BEARISH")
+    neutral_count = sum(1 for n in news if n.get("sentiment") == "NEUTRAL")
+
+    return {
+        "status": "SUCCESS",
+        "provider": "Finnhub Financial Intelligence",
+        "total_count": total,
+        "sentiment_breakdown": {
+            "bullish_pct": round((bullish_count / total * 100), 1) if total > 0 else 0.0,
+            "bearish_pct": round((bearish_count / total * 100), 1) if total > 0 else 0.0,
+            "neutral_pct": round((neutral_count / total * 100), 1) if total > 0 else 0.0,
+            "bullish_count": bullish_count,
+            "bearish_count": bearish_count,
+            "neutral_count": neutral_count
+        },
+        "news": news
+    }
+
+@app.get("/api/v1/market/sec-filings")
+def get_sec_filings(
+    symbol: str = Query("AAPL", description="US Equity symbol: AAPL, MSFT, NVDA, SPY"),
+    force_refresh: bool = Query(False)
+) -> Dict[str, Any]:
+    """Returns official corporate submissions (Form 8-K, 10-Q, 10-K, 4) from SEC EDGAR API."""
+    filings = news_adapter.fetch_sec_filings(symbol=symbol, force_refresh=force_refresh)
+    return {
+        "status": "SUCCESS",
+        "symbol": symbol.upper(),
+        "provider": "U.S. Securities and Exchange Commission (EDGAR)",
+        "total_count": len(filings),
+        "filings": filings
+    }
+
+# ==========================================
+# 9. Real-Time Telegram Operational Alerts
+# ==========================================
+
+class TelegramTestAlertRequest(BaseModel):
+    message: Optional[str] = "Manual operational test ping from Sukoon Control Plane."
+
+@app.get("/api/v1/telegram/status")
+def get_telegram_status() -> Dict[str, Any]:
+    return {
+        "configured": telegram_dispatcher.is_configured,
+        "chat_id": telegram_dispatcher.chat_id,
+        "has_token": bool(telegram_dispatcher.bot_token),
+        "dispatched_count": len(telegram_dispatcher._sent_alerts)
+    }
+
+@app.get("/api/v1/telegram/alerts")
+def get_telegram_alerts(limit: int = Query(50, le=200)) -> List[Dict[str, Any]]:
+    return telegram_dispatcher.get_dispatched_alerts(limit=limit)
+
+@app.post("/api/v1/telegram/test")
+def send_telegram_test(req: TelegramTestAlertRequest) -> Dict[str, Any]:
+    """Sends a live test notification to the configured operator Telegram chat."""
+    alert = telegram_dispatcher.dispatch(
+        severity="INFO",
+        title="Manual Test Ping",
+        body=f"• *Triggered By:* Sukoon Mission Control Dashboard\n• *Status:* OPERATIONAL\n• *Message:* {req.message}"
+    )
+    return {
+        "status": "SUCCESS" if alert.telegram_dispatched else "DISPATCH_FAILED",
+        "alert": {
+            "severity": alert.severity,
+            "title": alert.title,
+            "body": alert.body,
+            "timestamp_utc": alert.timestamp_utc,
+            "telegram_dispatched": alert.telegram_dispatched
+        }
+    }

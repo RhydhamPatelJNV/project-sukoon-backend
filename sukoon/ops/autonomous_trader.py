@@ -33,13 +33,15 @@ class AutonomousTrader:
         guardian: SukoonGuardianEngine,
         ledger: EventLedger,
         evolution_mgr: StrategyEvolutionManager,
-        scan_interval_seconds: int = 30
+        scan_interval_seconds: int = 30,
+        telegram_dispatcher: Optional[Any] = None
     ) -> None:
         self.portfolio = portfolio
         self.guardian = guardian
         self.ledger = ledger
         self.evolution_mgr = evolution_mgr
         self.scan_interval_seconds = scan_interval_seconds
+        self.telegram_dispatcher = telegram_dispatcher
         
         self.is_running = True
         self.weekend_replay_mode = False  # Strict real-world US market calendar enforcement by default
@@ -340,6 +342,16 @@ class AutonomousTrader:
                         f"Order for {sym} ({strat.name}) VETOED by Guardian: {', '.join(decision.reasons)}",
                         {"strategy_id": strat.strategy_id, "reasons": decision.reasons}
                     )
+                    if self.telegram_dispatcher and getattr(self.telegram_dispatcher, "is_configured", False):
+                        try:
+                            self.telegram_dispatcher.dispatch_guardian_alert(
+                                approved=False,
+                                symbol=sym,
+                                reasons=decision.reasons,
+                                cash=self.portfolio.cash
+                            )
+                        except Exception:
+                            pass
                     continue
 
                 order.guardian_token = decision.pass_token
@@ -368,6 +380,21 @@ class AutonomousTrader:
                         "rationale": ai_rationale,
                         "timestamp_utc": now_str
                     }
+
+                    if self.telegram_dispatcher and getattr(self.telegram_dispatcher, "is_configured", False):
+                        try:
+                            self.telegram_dispatcher.dispatch_trade_alert(
+                                action=action.value,
+                                symbol=sym,
+                                quantity=fill.filled_qty,
+                                price=fill.fill_price,
+                                strategy_id=strat.strategy_id,
+                                order_id=order.order_id,
+                                status="ACCEPTED_QUEUED" if getattr(self.portfolio, "alpaca_broker", None) else "FILLED",
+                                alpaca_queued=bool(getattr(self.portfolio, "alpaca_broker", None) and self.portfolio.alpaca_broker.is_configured)
+                            )
+                        except Exception:
+                            pass
 
                     # If this was a SELL, record outcome and re-evaluate strategy confidence!
                     if action == OrderAction.SELL:
