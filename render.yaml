@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: project-sukoon-backend
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn sukoon.api.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: SUKOON_ENV
+        value: PAPER
+      - key: SUKOON_LOG_LEVEL
+        value: INFO
+      - key: ALPACA_DATA_FEED
+        value: iex
+      - key: GUARDIAN_MAX_DRAWDOWN_PCT
+        value: "0.06"
+      - key: GUARDIAN_DAILY_LOSS_LIMIT_PCT
+        value: "0.02"
+      - key: GUARDIAN_MAX_POSITION_PCT
+        value: "0.10"
+      - key: GUARDIAN_CASH_ONLY_ENFORCED
+        value: "true"
+      - key: GROQ_MODEL_ID
+        value: "qwen-2.5-32b"

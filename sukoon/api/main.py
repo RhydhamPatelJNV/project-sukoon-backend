@@ -105,16 +105,22 @@ def get_system_resources() -> Dict[str, Any]:
     used_mb = int(mem.used / (1024 * 1024))
     headroom_pct = round((mem.available / mem.total) * 100, 2)
     
-    # Check llama-server live health
-    llama_endpoint = os.getenv("LLAMA_CPP_ENDPOINT", "http://127.0.0.1:8088/v1")
-    health_url = llama_endpoint.replace("/v1", "").rstrip("/") + "/health"
+    # Check model inference health (Groq Cloud or local llama-server)
+    groq_key = os.getenv("GROQ_API_KEY", "")
     llama_status = "OFFLINE"
-    try:
-        resp = httpx.get(health_url, timeout=3.0)
-        if resp.status_code == 200:
-            llama_status = "ONLINE_READY"
-    except Exception as e:
-        llama_status = "OFFLINE"
+    active_model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+    if groq_key:
+        llama_status = "ONLINE_READY"
+        active_model = os.getenv("GROQ_MODEL_ID", "qwen-2.5-32b (Groq Cloud)")
+    else:
+        llama_endpoint = os.getenv("LLAMA_CPP_ENDPOINT", "http://127.0.0.1:8088/v1")
+        health_url = llama_endpoint.replace("/v1", "").rstrip("/") + "/health"
+        try:
+            resp = httpx.get(health_url, timeout=3.0)
+            if resp.status_code == 200:
+                llama_status = "ONLINE_READY"
+        except Exception:
+            llama_status = "OFFLINE"
     
     return {
         "cpu_usage_pct": psutil.cpu_percent(),
@@ -125,7 +131,7 @@ def get_system_resources() -> Dict[str, Any]:
         "storage_used_gb": 18.5,
         "storage_total_gb": 200.0,
         "llama_concurrency_slots": 1,
-        "active_model_id": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        "active_model_id": active_model,
         "llama_server_status": llama_status
     }
 
@@ -135,30 +141,40 @@ def get_system_resources() -> Dict[str, Any]:
 class CortexChatRequest(BaseModel):
     prompt: str
     system_prompt: Optional[str] = "You are Project Sukoon Quantitative Risk & Market Specialist. Respond in 1-2 concise sentences."
-    max_tokens: Optional[int] = 60
+    max_tokens: Optional[int] = 120
     temperature: Optional[float] = 0.2
 
 @app.post("/api/v1/cortex/chat")
 def cortex_chat(req: CortexChatRequest) -> Dict[str, Any]:
-    llama_endpoint = os.getenv("LLAMA_CPP_ENDPOINT", "http://127.0.0.1:8088/v1")
-    url = llama_endpoint.rstrip("/") + "/chat/completions"
+    groq_api_key = os.getenv("GROQ_API_KEY", "")
+    if groq_api_key:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        model_name = os.getenv("GROQ_MODEL_ID", "qwen-2.5-32b")
+        headers = {"Authorization": f"Bearer {groq_api_key}"}
+    else:
+        llama_endpoint = os.getenv("LLAMA_CPP_ENDPOINT", "http://127.0.0.1:8088/v1")
+        url = llama_endpoint.rstrip("/") + "/chat/completions"
+        model_name = "qwen2.5-7b"
+        headers = {}
+
     payload = {
-        "model": "qwen2.5-7b",
+        "model": model_name,
         "messages": [
             {"role": "system", "content": req.system_prompt},
             {"role": "user", "content": req.prompt}
         ],
-        "max_tokens": req.max_tokens or 60,
+        "max_tokens": req.max_tokens or 120,
         "temperature": req.temperature
     }
     try:
-        resp = httpx.post(url, json=payload, timeout=180.0)
+        resp = httpx.post(url, json=payload, headers=headers, timeout=60.0)
         data = resp.json()
         content = data["choices"][0]["message"]["content"]
         tokens = data.get("usage", {}).get("total_tokens", 0)
         return {
             "status": "SUCCESS",
-            "model_id": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+            "model_id": model_name,
+            "provider": "Groq Cloud" if groq_api_key else "Local Llama",
             "prompt": req.prompt,
             "response": content.strip(),
             "tokens_used": tokens

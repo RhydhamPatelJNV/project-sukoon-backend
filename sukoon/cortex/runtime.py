@@ -29,14 +29,19 @@ class CortexRuntime:
 
     def __init__(
         self,
-        endpoint_url: str = "http://localhost:8080/v1",
+        endpoint_url: str = "http://localhost:8088/v1",
         model_id: str = "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
         timeout_seconds: float = 30.0,
         mock_mode: Optional[bool] = None
     ) -> None:
         import os
-        self.endpoint_url = os.getenv("LLAMA_CPP_ENDPOINT", endpoint_url)
-        self.model_id = os.getenv("LLAMA_CPP_MODEL_ID", model_id)
+        self.groq_api_key = os.getenv("GROQ_API_KEY", "")
+        if self.groq_api_key:
+            self.endpoint_url = "https://api.groq.com/openai/v1"
+            self.model_id = os.getenv("GROQ_MODEL_ID", "qwen-2.5-32b")
+        else:
+            self.endpoint_url = os.getenv("LLAMA_CPP_ENDPOINT", endpoint_url)
+            self.model_id = os.getenv("LLAMA_CPP_MODEL_ID", model_id)
         self.timeout_seconds = timeout_seconds
         if mock_mode is not None:
             self.mock_mode = mock_mode
@@ -121,10 +126,15 @@ class CortexRuntime:
                     model_id=self.model_id
                 )
             else:
-                # Live HTTP call to llama.cpp OpenAI-compatible endpoint
+                # Live HTTP call to llama.cpp or Groq OpenAI-compatible endpoint
+                headers = {}
+                if self.groq_api_key:
+                    headers["Authorization"] = f"Bearer {self.groq_api_key}"
+
                 with httpx.Client(timeout=self.timeout_seconds) as client:
                     resp = client.post(
                         f"{self.endpoint_url}/chat/completions",
+                        headers=headers,
                         json={
                             "model": self.model_id,
                             "messages": [
