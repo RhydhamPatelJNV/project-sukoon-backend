@@ -1,0 +1,21 @@
+# Environment and Secrets
+.env
+.env.*
+*.secret
+
+# Heavy Weights and Binaries
+models/*.gguf
+models/*.bin
+models/
+llama_bin/
+bin/
+
+# Logs and Temporary Files
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/

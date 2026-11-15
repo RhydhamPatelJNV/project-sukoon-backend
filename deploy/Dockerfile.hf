@@ -1,0 +1,59 @@
+# ==============================================================================
+# PROJECT SUKOON — HUGGING FACE SPACES DOCKERFILE
+# Hardware: 2 vCPU, 16 GB RAM, 50 GB Disk
+# Default Port: 7860
+# ==============================================================================
+
+# Stage 1: Build llama.cpp for x86_64 Linux
+FROM ubuntu:22.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git && \
+    cd llama.cpp && \
+    cmake -B build -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DGGML_BUILD_SERVER=ON && \
+    cmake --build build --config Release -j 2 --target llama-server
+
+# Stage 2: Final Production Runtime
+FROM python:3.10-slim-bullseye
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Install curl for health checks and model fetching
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create standard Hugging Face non-root user (UID 1000)
+RUN useradd -m -u 1000 user
+WORKDIR /app
+
+# Copy llama-server binary from builder
+COPY --from=builder /tmp/llama.cpp/build/bin/llama-server /app/bin/llama-server
+RUN chmod +x /app/bin/llama-server
+
+# Install Python requirements
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir uvicorn[standard] httpx psutil
+
+# Copy application source code
+COPY sukoon/ ./sukoon/
+COPY deploy/entrypoint_hf.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh && chown -R user:user /app
+
+USER user
+EXPOSE 7860
+
+ENTRYPOINT ["./entrypoint.sh"]
