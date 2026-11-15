@@ -130,8 +130,42 @@ def get_system_resources() -> Dict[str, Any]:
     }
 
 # ==========================================
-# 2. Specialist Intelligence Catalog
+# 2. Specialist Intelligence Catalog & Inference
 # ==========================================
+class CortexChatRequest(BaseModel):
+    prompt: str
+    system_prompt: Optional[str] = "You are Project Sukoon Quantitative Risk & Market Specialist."
+    max_tokens: Optional[int] = 150
+    temperature: Optional[float] = 0.2
+
+@app.post("/api/v1/cortex/chat")
+def cortex_chat(req: CortexChatRequest) -> Dict[str, Any]:
+    llama_endpoint = os.getenv("LLAMA_CPP_ENDPOINT", "http://127.0.0.1:8088/v1")
+    url = llama_endpoint.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": "qwen2.5-7b",
+        "messages": [
+            {"role": "system", "content": req.system_prompt},
+            {"role": "user", "content": req.prompt}
+        ],
+        "max_tokens": req.max_tokens,
+        "temperature": req.temperature
+    }
+    try:
+        resp = httpx.post(url, json=payload, timeout=60.0)
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        tokens = data.get("usage", {}).get("total_tokens", 0)
+        return {
+            "status": "SUCCESS",
+            "model_id": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+            "prompt": req.prompt,
+            "response": content.strip(),
+            "tokens_used": tokens
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Inference failed: {str(e)}")
+
 
 @app.get("/api/v1/agents")
 def list_agents(group_id: Optional[str] = None) -> List[Dict[str, Any]]:
