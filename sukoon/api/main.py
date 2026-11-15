@@ -134,8 +134,8 @@ def get_system_resources() -> Dict[str, Any]:
 # ==========================================
 class CortexChatRequest(BaseModel):
     prompt: str
-    system_prompt: Optional[str] = "You are Project Sukoon Quantitative Risk & Market Specialist."
-    max_tokens: Optional[int] = 150
+    system_prompt: Optional[str] = "You are Project Sukoon Quantitative Risk & Market Specialist. Respond in 1-2 concise sentences."
+    max_tokens: Optional[int] = 60
     temperature: Optional[float] = 0.2
 
 @app.post("/api/v1/cortex/chat")
@@ -148,11 +148,11 @@ def cortex_chat(req: CortexChatRequest) -> Dict[str, Any]:
             {"role": "system", "content": req.system_prompt},
             {"role": "user", "content": req.prompt}
         ],
-        "max_tokens": req.max_tokens,
+        "max_tokens": req.max_tokens or 60,
         "temperature": req.temperature
     }
     try:
-        resp = httpx.post(url, json=payload, timeout=60.0)
+        resp = httpx.post(url, json=payload, timeout=180.0)
         data = resp.json()
         content = data["choices"][0]["message"]["content"]
         tokens = data.get("usage", {}).get("total_tokens", 0)
