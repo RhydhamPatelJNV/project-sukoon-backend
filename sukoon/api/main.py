@@ -39,6 +39,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/")
+def root() -> Dict[str, Any]:
+    return {
+        "name": "Project Sukoon Production Control Plane",
+        "status": "OPERATIONAL",
+        "environment": os.getenv("SUKOON_ENV", "PAPER"),
+        "documentation": "/docs",
+        "telemetry": "/api/v1/system/resources",
+        "health": "/api/v1/system/health"
+    }
+
 # Shared in-process service state
 ledger = EventLedger(":memory:")
 symbol_master = SymbolMaster()
