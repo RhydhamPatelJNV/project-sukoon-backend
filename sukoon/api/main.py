@@ -105,13 +105,14 @@ def get_system_resources() -> Dict[str, Any]:
     headroom_pct = round((mem.available / mem.total) * 100, 2)
     
     # Check llama-server live health
+    llama_endpoint = os.getenv("LLAMA_CPP_ENDPOINT", "http://127.0.0.1:8088/v1")
+    health_url = llama_endpoint.replace("/v1", "").rstrip("/") + "/health"
     llama_status = "OFFLINE"
     try:
-        resp = httpx.get("http://127.0.0.1:8080/health", timeout=3.0)
+        resp = httpx.get(health_url, timeout=3.0)
         if resp.status_code == 200:
             llama_status = "ONLINE_READY"
     except Exception as e:
-        print(f"[RESOURCES] llama health check error: {e}", flush=True)
         llama_status = "OFFLINE"
     
     return {
